@@ -228,6 +228,46 @@ def func_ST(x, t, u, mu, C_Sf, C_Sr, lf, lr, h, m, I, s_min, s_max, sv_min, sv_m
     f = vehicle_dynamics_st(x, u, mu, C_Sf, C_Sr, lf, lr, h, m, I, s_min, s_max, sv_min, sv_max, v_switch, a_max, v_min, v_max)
     return f
 
+def vehicle_dynamics_std_wrapped(x, u, params):
+    """
+    Drift single-track model via commonroad-vehicle-models.
+    x: [x,y,delta,v,psi,psi_dot,beta,omega_f,omega_r]
+    u: [delta_dot, a]   (adjust order if your installed function differs)
+    """
+    try:
+        from vehiclemodels.vehicle_dynamics_std import vehicle_dynamics_std
+        from f110_gym.envs.commonroad_rc_params import make_rc_commonroad_params
+    except ImportError as e:
+        raise ImportError(
+            "Install drift model dependency: pip install commonroad-vehicle-models==3.0.2"
+        ) from e
+
+    p = make_rc_commonroad_params(params)
+
+
+    # map core parameters from F1TENTH
+    # attribute names may differ; adjust once by inspecting dir(p)
+    if hasattr(p, "m"):
+        p.m = params["m"]
+    if hasattr(p, "I_z"):
+        p.I_z = params["I"]
+    if hasattr(p, "a"):
+        p.a = params["lf"]
+    if hasattr(p, "b"):
+        p.b = params["lr"]
+    if hasattr(p, "r_w"):
+        p.r_w = params.get("wheel_radius", 0.053)
+    # wheel radius used in slip computation
+    if hasattr(p, "R_w"):
+        p.R_w = params.get("wheel_radius", getattr(p, "R_w", 0.053))
+    # CommonRoad uses I_y_w in wheel dynamics
+    if "I_y_w" in params and hasattr(p, "I_y_w"):
+        p.I_y_w = 2.5e-4   # kg*m^2 (reasonable 1:6-ish wheel inertia)
+
+    dx = vehicle_dynamics_std(np.asarray(x, float), np.asarray(u, float), p)
+    return np.asarray(dx, float)
+
+
 class DynamicsTest(unittest.TestCase):
     def setUp(self):
         # test params

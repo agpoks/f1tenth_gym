@@ -243,8 +243,8 @@ def main():
     main entry point
     """
 
-    work = {'mass': 3.463388126201571, 'lf': 0.15597534362552312, 'tlad': 0.82461887897713965, 'vgain': 1.375}#0.90338203837889}
-    
+    work = {'mass': 3.463388126201571, 'lf': 0.15597534362552312, 'tlad': 1.682461887897713965, 'vgain': 1.075}#0.90338203837889}
+
     with open('config_example_map.yaml') as file:
         conf_dict = yaml.load(file, Loader=yaml.FullLoader)
     conf = Namespace(**conf_dict)
@@ -269,18 +269,80 @@ def main():
 
         planner.render_waypoints(env_renderer)
 
-    env = gym.make('f110_gym:f110-v0', map=conf.map_path, map_ext=conf.map_ext, num_agents=1, timestep=0.01, integrator=Integrator.RK4)
+    #env = gym.make('f110_gym:f110-v0', map=conf.map_path, map_ext=conf.map_ext, num_agents=1, timestep=0.01, integrator=Integrator.RK4)
+    params = {
+        "mu": 1.1,
+        "lf": 0.15875, "lr": 0.17145, "h": 0.074,
+        "m": 3.74, "I": 0.04712,
+        "s_min": -0.4189, "s_max": 0.4189,
+        "sv_min": -3.2, "sv_max": 3.2,
+        "v_switch": 2.0, "a_max": 3.0,
+        "v_min": -5.0, "v_max": 20.0,
+        "width": 0.31, "length": 0.58,
+
+        "model": "std",
+        "wheel_radius": 0.053,
+        "publish_extra_states": True,
+
+        # optional: override only what you want; anything omitted stays at CommonRoad defaults
+        "tire_rc": {
+            "p_dx1": 1.15,
+            "p_dy1": 1.15,
+            "p_cx1": 1.75,
+            "p_cy1": 1.60,
+            # ...or leave out entirely to use the built-in RC defaults
+        },
+    }
+
+    env = gym.make(
+        'f110_gym:f110-v0',
+        map=conf.map_path,
+        map_ext=conf.map_ext,
+        num_agents=1,
+        timestep=0.01,
+        integrator=Integrator.Euler,  # start with Euler for debugging; switch back to RK4 later
+        params=params
+    )
+
     env.add_render_callback(render_callback)
     
     obs, step_reward, done, info = env.reset(np.array([[conf.sx, conf.sy, conf.stheta]]))
     env.render()
+    print("state dim:", env.sim.agents[0].state.shape, "keys:", obs.keys())
 
     laptime = 0.0
     start = time.time()
+    step = 0
 
     while not done:
         speed, steer = planner.plan(obs['poses_x'][0], obs['poses_y'][0], obs['poses_theta'][0], work['tlad'], work['vgain'])
+        # --- DEBUG: what planner commands
+        #if step % 10 == 0:
+        #    print(f"[{step:05d}] PLAN  steer={steer:+.3f}  speed={speed:+.2f}  ")
+
+        a_cmd = 2.0  # m/s^2
+
         obs, step_reward, done, info = env.step(np.array([[steer, speed]]))
+
+        # --- DEBUG: what actually happened
+        if step % 10 == 0:
+
+            # internal STD state (only if std is active)
+            st = env.sim.agents[0].state
+            if len(st) >= 9:
+                delta = float(st[2])
+                v = float(st[3])
+                r = float(st[5])
+                beta = float(st[6])
+                wf = float(st[7])
+                wr = float(st[8])
+
+                spin_ratio = abs(r) / max(abs(v), 1e-3)  # |yaw_rate| / speed
+
+                #print(f"         STD   delta={delta:+.3f} v={v:+.2f} r={r:+.2f} "
+                #      f"beta={beta:+.3f} wf={wf:+.1f} wr={wr:+.1f} |r|/v={spin_ratio:.2f}")
+
+        step += 1
         laptime += step_reward
         env.render(mode='human')
         

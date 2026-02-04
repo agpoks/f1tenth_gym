@@ -33,7 +33,7 @@ import warnings
 import numpy as np
 from numba import njit
 
-from f110_gym.envs.dynamic_models import vehicle_dynamics_st, pid
+from f110_gym.envs.dynamic_models import vehicle_dynamics_st, vehicle_dynamics_std_wrapped, pid
 from f110_gym.envs.laser_models import ScanSimulator2D, check_ttc_jit, ray_cast
 from f110_gym.envs.collision_models import get_vertices, collision_multiple
 
@@ -95,7 +95,12 @@ class RaceCar(object):
             warnings.warn(f"Chosen integrator is RK4. This is different from previous versions of the gym.")
 
         # state is [x, y, steer_angle, vel, yaw_angle, yaw_rate, slip_angle]
-        self.state = np.zeros((7, ))
+        self.model = params.get('model', 'st')
+        if self.model == 'std':
+            self.state = np.zeros((9,))
+        else:
+        # state is [x, y, steer, v, yaw, yaw_rate, slip_angle, omega_f, omega_r]
+            self.state = np.zeros((7,))
 
         # pose of opponents in the world
         self.opp_poses = None
@@ -193,14 +198,23 @@ class RaceCar(object):
         # clear control inputs
         self.accel = 0.0
         self.steer_angle_vel = 0.0
-        # clear collision indicator
         self.in_collision = False
-        # clear state
-        self.state = np.zeros((7, ))
-        self.state[0:2] = pose[0:2]
-        self.state[4] = pose[2]
-        self.steer_buffer = np.empty((0, ))
-        # reset scan random generator
+
+        if self.model == "std":
+            self.state = np.zeros((9,))
+            self.state[0:2] = pose[0:2]  # x,y
+            self.state[4] = pose[2]  # yaw angle Ψ is x5 in CommonRoad, but in your state it's index 4
+            # optional: initialize wheel speeds to match vehicle speed
+            Rw = float(self.params.get("wheel_radius", 0.053))
+            v0 = float(self.state[3])
+            self.state[7] = max(0.0, v0 / Rw)  # omega_f
+            self.state[8] = max(0.0, v0 / Rw)  # omega_r
+        else:
+            self.state = np.zeros((7,))
+            self.state[0:2] = pose[0:2]
+            self.state[4] = pose[2]
+
+        self.steer_buffer = np.empty((0,))
         self.scan_rng = np.random.default_rng(seed=self.seed)
 
     def ray_cast_agents(self, scan):
@@ -280,13 +294,16 @@ class RaceCar(object):
 
         # steering angle velocity input to steering velocity acceleration input
         accl, sv = pid(vel, steer, self.state[3], self.state[2], self.params['sv_max'], self.params['a_max'], self.params['v_max'], self.params['v_min'])
-        
-        if self.integrator is Integrator.RK4:
-            # RK4 integration
-            k1 = vehicle_dynamics_st(
-                self.state,
-                np.array([sv, accl]),
-                self.params['mu'],
+
+        # choose dynamics model
+        u = np.array([sv, accl])
+
+        if self.model == 'st':
+            def dyn(x, u_local):
+                return vehicle_dynamics_st(
+                    x,
+                    u_local,
+                    self.params['mu'],
                 self.params['C_Sf'],
                 self.params['C_Sr'],
                 self.params['lf'],
@@ -302,96 +319,34 @@ class RaceCar(object):
                 self.params['a_max'],
                 self.params['v_min'],
                 self.params['v_max'])
+        elif self.model == 'std':
+            def dyn(x, u_local):
+                return vehicle_dynamics_std_wrapped(x, u_local, self.params)
+
+        else:
+            raise ValueError(f"Unknown vehicle model: {self.model}")
+
+        if self.integrator is Integrator.RK4:
+            # RK4 integration
+            k1 = dyn(self.state, u)
 
             k2_state = self.state + self.time_step*(k1/2)
 
-            k2 = vehicle_dynamics_st(
-                k2_state,
-                np.array([sv, accl]),
-                self.params['mu'],
-                self.params['C_Sf'],
-                self.params['C_Sr'],
-                self.params['lf'],
-                self.params['lr'],
-                self.params['h'],
-                self.params['m'],
-                self.params['I'],
-                self.params['s_min'],
-                self.params['s_max'],
-                self.params['sv_min'],
-                self.params['sv_max'],
-                self.params['v_switch'],
-                self.params['a_max'],
-                self.params['v_min'],
-                self.params['v_max'])
+            k2 = dyn(k2_state, u)
 
             k3_state = self.state + self.time_step*(k2/2)
 
-            k3 = vehicle_dynamics_st(
-                k3_state,
-                np.array([sv, accl]),
-                self.params['mu'],
-                self.params['C_Sf'],
-                self.params['C_Sr'],
-                self.params['lf'],
-                self.params['lr'],
-                self.params['h'],
-                self.params['m'],
-                self.params['I'],
-                self.params['s_min'],
-                self.params['s_max'],
-                self.params['sv_min'],
-                self.params['sv_max'],
-                self.params['v_switch'],
-                self.params['a_max'],
-                self.params['v_min'],
-                self.params['v_max'])
+            k3 = dyn(k3_state, u)
 
             k4_state = self.state + self.time_step*k3
 
-            k4 = vehicle_dynamics_st(
-                k4_state,
-                np.array([sv, accl]),
-                self.params['mu'],
-                self.params['C_Sf'],
-                self.params['C_Sr'],
-                self.params['lf'],
-                self.params['lr'],
-                self.params['h'],
-                self.params['m'],
-                self.params['I'],
-                self.params['s_min'],
-                self.params['s_max'],
-                self.params['sv_min'],
-                self.params['sv_max'],
-                self.params['v_switch'],
-                self.params['a_max'],
-                self.params['v_min'],
-                self.params['v_max'])
+            k4 = dyn(k4_state, u)
 
             # dynamics integration
             self.state = self.state + self.time_step*(1/6)*(k1 + 2*k2 + 2*k3 + k4)
         
         elif self.integrator is Integrator.Euler:
-            f = vehicle_dynamics_st(
-                self.state,
-                np.array([sv, accl]),
-                self.params['mu'],
-                self.params['C_Sf'],
-                self.params['C_Sr'],
-                self.params['lf'],
-                self.params['lr'],
-                self.params['h'],
-                self.params['m'],
-                self.params['I'],
-                self.params['s_min'],
-                self.params['s_max'],
-                self.params['sv_min'],
-                self.params['sv_max'],
-                self.params['v_switch'],
-                self.params['a_max'],
-                self.params['v_min'],
-                self.params['v_max'])
+            f = dyn(self.state, u)
             self.state = self.state + self.time_step * f
         
         else:
@@ -600,15 +555,29 @@ class Simulator(object):
             'linear_vels_y': [],
             'ang_vels_z': [],
             'collisions': self.collisions}
+        if self.params.get('publish_extra_states', False):
+            observations.update({'steer_angle': [], 'slip_angle': [], 'yaw_rate': []})
+            if self.params.get('model', 'st') == 'std':
+                observations.update({'omega_f': [], 'omega_r': []})
+
         for i, agent in enumerate(self.agents):
             observations['scans'].append(agent_scans[i])
             observations['poses_x'].append(agent.state[0])
             observations['poses_y'].append(agent.state[1])
             observations['poses_theta'].append(agent.state[4])
-            observations['linear_vels_x'].append(agent.state[3])
-            observations['linear_vels_y'].append(0.)
+            v = agent.state[3]
+            beta = agent.state[6]
+            observations['linear_vels_x'].append(v * np.cos(beta))
+            observations['linear_vels_y'].append(v * np.sin(beta))
             observations['ang_vels_z'].append(agent.state[5])
 
+            if self.params.get('publish_extra_states', False):
+                observations['steer_angle'].append(agent.state[2])
+                observations['slip_angle'].append(agent.state[6])
+                observations['yaw_rate'].append(agent.state[5])
+                if self.params.get('model', 'st') == 'std':
+                    observations['omega_f'].append(agent.state[7])
+                    observations['omega_r'].append(agent.state[8])
         return observations
 
     def reset(self, poses):
