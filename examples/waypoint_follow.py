@@ -276,7 +276,7 @@ def main():
         "m": 3.74, "I": 0.04712,
         "s_min": -0.4189, "s_max": 0.4189,
         "sv_min": -3.2, "sv_max": 3.2,
-        "v_switch": 2.0, "a_max": 3.0,
+        "v_switch": 1.5, "a_max": 4.0,
         "v_min": -5.0, "v_max": 20.0,
         "width": 0.31, "length": 0.58,
 
@@ -288,8 +288,10 @@ def main():
         "tire_rc": {
             "p_dx1": 1.15,
             "p_dy1": 1.15,
-            "p_cx1": 1.75,
-            "p_cy1": 1.60,
+            "p_cx1": 1.25,
+            "p_cy1": 1.20,
+            "p.p_kx1": 48.60,
+            "p.p_ky1": -41.60,
             # ...or leave out entirely to use the built-in RC defaults
         },
     }
@@ -338,7 +340,7 @@ def main():
                 wr = float(st[8])
 
                 spin_ratio = abs(r) / max(abs(v), 1e-3)  # |yaw_rate| / speed
-
+                print(f"         STD   delta={delta:+.2f} v_ist={v:+.2f} v_pl={speed:+.2f} wf={wf:+.1f} ")
                 #print(f"         STD   delta={delta:+.3f} v={v:+.2f} r={r:+.2f} "
                 #      f"beta={beta:+.3f} wf={wf:+.1f} wr={wr:+.1f} |r|/v={spin_ratio:.2f}")
 
