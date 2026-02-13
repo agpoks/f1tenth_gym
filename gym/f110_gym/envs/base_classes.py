@@ -90,6 +90,23 @@ class RaceCar(object):
         self.num_beams = num_beams
         self.fov = fov
         self.integrator = integrator
+
+        # --- derivatives / accelerations (published via observations if enabled)
+        self.v_dot = 0.0
+        self.beta_dot = 0.0
+        self.psi_dot = 0.0
+        self.a_x = 0.0
+        self.a_y = 0.0
+
+        # --- IMU parameters
+        self.imu_sigma_ax = float(self.params.get("imu_sigma_ax", 0.05))
+        self.imu_sigma_ay = float(self.params.get("imu_sigma_ay", 0.05))
+        self.imu_bias_ax = float(self.params.get("imu_bias_ax", 0.0))
+        self.imu_bias_ay = float(self.params.get("imu_bias_ay", 0.0))
+        # --- IMU outputs
+        self.imu_ax = 0.0
+        self.imu_ay = 0.0
+
         self.lidar_dist = lidar_dist
         if self.integrator is Integrator.RK4:
             warnings.warn(f"Chosen integrator is RK4. This is different from previous versions of the gym.")
@@ -326,31 +343,48 @@ class RaceCar(object):
         else:
             raise ValueError(f"Unknown vehicle model: {self.model}")
 
+        # --- save pre-step values (for accel computation)
+        v0 = float(self.state[3])
+        beta0 = float(self.state[6])
+        r0 = float(self.state[5])  # yaw_rate = psi_dot
+
+        # --- compute xdot and integrate
         if self.integrator is Integrator.RK4:
-            # RK4 integration
             k1 = dyn(self.state, u)
+            k2 = dyn(self.state + 0.5 * self.time_step * k1, u)
+            k3 = dyn(self.state + 0.5 * self.time_step * k2, u)
+            k4 = dyn(self.state + self.time_step * k3, u)
 
-            k2_state = self.state + self.time_step*(k1/2)
+            xdot = (1.0 / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+            # --- optional: compute mean yaw rate over step
+            r_dot = float(xdot[5])  # yaw_rate_dot
+            r0 = r0 + 0.5 * self.time_step * r_dot
 
-            k2 = dyn(k2_state, u)
+            self.state = self.state + self.time_step * xdot
 
-            k3_state = self.state + self.time_step*(k2/2)
-
-            k3 = dyn(k3_state, u)
-
-            k4_state = self.state + self.time_step*k3
-
-            k4 = dyn(k4_state, u)
-
-            # dynamics integration
-            self.state = self.state + self.time_step*(1/6)*(k1 + 2*k2 + 2*k3 + k4)
-        
         elif self.integrator is Integrator.Euler:
-            f = dyn(self.state, u)
-            self.state = self.state + self.time_step * f
-        
+            xdot = dyn(self.state, u)
+            self.state = self.state + self.time_step * xdot
+
         else:
-            raise SyntaxError(f"Invalid Integrator Specified. Provided {self.integrator.name}. Please choose RK4 or Euler")
+            raise SyntaxError(
+                f"Invalid Integrator Specified. Provided {self.integrator.name}. Please choose RK4 or Euler")
+
+        # --- store derivatives
+        self.v_dot = float(xdot[3])
+        #self.psi_dot = float(xdot[5])
+        self.beta_dot = float(xdot[6])
+
+        # --- compute body-frame accelerations using PRE-step v,beta
+        self.a_x = self.v_dot * np.cos(beta0) - v0 * (self.beta_dot + r0) * np.sin(beta0)
+        self.a_y = self.v_dot * np.sin(beta0) + v0 * (self.beta_dot + r0) * np.cos(beta0)
+
+        # --- IMU noise + bias
+        nax = self.scan_rng.normal(0.0, self.imu_sigma_ax)
+        nay = self.scan_rng.normal(0.0, self.imu_sigma_ay)
+
+        self.imu_ax = self.a_x + self.imu_bias_ax + nax
+        self.imu_ay = self.a_y + self.imu_bias_ay + nay
 
         # bound yaw angle
         if self.state[4] > 2*np.pi:
@@ -557,6 +591,8 @@ class Simulator(object):
             'collisions': self.collisions}
         if self.params.get('publish_extra_states', False):
             observations.update({'steer_angle': [], 'slip_angle': [], 'yaw_rate': []})
+            observations.update({'a_x': [], 'a_y': []})
+            observations.update({'imu_ax': [], 'imu_ay': []})
             if self.params.get('model', 'st') == 'std':
                 observations.update({'omega_f': [], 'omega_r': []})
 
@@ -575,6 +611,10 @@ class Simulator(object):
                 observations['steer_angle'].append(agent.state[2])
                 observations['slip_angle'].append(agent.state[6])
                 observations['yaw_rate'].append(agent.state[5])
+                observations['a_x'].append(agent.a_x)
+                observations['a_y'].append(agent.a_y)
+                observations['imu_ax'].append(agent.imu_ax)
+                observations['imu_ay'].append(agent.imu_ay)
                 if self.params.get('model', 'st') == 'std':
                     observations['omega_f'].append(agent.state[7])
                     observations['omega_r'].append(agent.state[8])
@@ -590,7 +630,17 @@ class Simulator(object):
         Returns:
             None
         """
-        
+        self.v_dot = 0.0
+        self.beta_dot = 0.0
+        self.psi_dot = 0.0
+        self.a_x = 0.0
+        self.a_y = 0.0
+        self.imu_ax = 0.0
+        self.imu_ay = 0.0
+
+        self.steer_buffer = np.empty((0,))
+        self.scan_rng = np.random.default_rng(seed=self.seed)
+
         if poses.shape[0] != self.num_agents:
             raise ValueError('Number of poses for reset does not match number of agents.')
 

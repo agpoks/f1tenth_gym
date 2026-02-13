@@ -271,16 +271,18 @@ def main():
 
     #env = gym.make('f110_gym:f110-v0', map=conf.map_path, map_ext=conf.map_ext, num_agents=1, timestep=0.01, integrator=Integrator.RK4)
     params = {
-        "mu": 1.1,
+        "mu": 1.0489,
         "lf": 0.15875, "lr": 0.17145, "h": 0.074,
         "m": 3.74, "I": 0.04712,
         "s_min": -0.4189, "s_max": 0.4189,
         "sv_min": -3.2, "sv_max": 3.2,
-        "v_switch": 1.5, "a_max": 4.0,
+        "v_switch": 2.5, "a_max": 9.51,
         "v_min": -5.0, "v_max": 20.0,
         "width": 0.31, "length": 0.58,
+        "C_Sf": 4.718,
+        "C_Sr": 5.4562,
 
-        "model": "std",
+        "model": "st",
         "wheel_radius": 0.053,
         "publish_extra_states": True,
 
@@ -322,28 +324,48 @@ def main():
         #if step % 10 == 0:
         #    print(f"[{step:05d}] PLAN  steer={steer:+.3f}  speed={speed:+.2f}  ")
 
-        a_cmd = 2.0  # m/s^2
 
         obs, step_reward, done, info = env.step(np.array([[steer, speed]]))
 
         # --- DEBUG: what actually happened
-        if step % 10 == 0:
+        if step % 5 == 0:
+
+            vx = float(obs["linear_vels_x"][0])
+            vy = float(obs["linear_vels_y"][0])
+            r_obs = float(obs["ang_vels_z"][0])
+
+            #print(f"OBS   vx={vx:+.2f} r={r_obs:+.2f}")
 
             # internal STD state (only if std is active)
             st = env.sim.agents[0].state
-            if len(st) >= 9:
+            if len(st) >= 7:
                 delta = float(st[2])
                 v = float(st[3])
                 r = float(st[5])
                 beta = float(st[6])
-                wf = float(st[7])
-                wr = float(st[8])
+                #wf = float(st[7])
+                #wr = float(st[8])
 
-                spin_ratio = abs(r) / max(abs(v), 1e-3)  # |yaw_rate| / speed
-                print(f"         STD   delta={delta:+.2f} v_ist={v:+.2f} v_pl={speed:+.2f} wf={wf:+.1f} ")
-                #print(f"         STD   delta={delta:+.3f} v={v:+.2f} r={r:+.2f} "
-                #      f"beta={beta:+.3f} wf={wf:+.1f} wr={wr:+.1f} |r|/v={spin_ratio:.2f}")
+                g = 9.81
+                a_lat_g = obs['a_y'][0] / g
+                a_lon_g = obs['a_x'][0] / g
+                a_tot_g = np.sqrt(obs['a_x'][0] ** 2 + obs['a_y'][0] ** 2) / g
 
+                print(f"    |a|={a_tot_g:4.2f} g  (ax={a_lon_g:+4.2f} g, ay={a_lat_g:+4.2f} g)")
+
+                print(
+                    f"ST  delta={delta:+.3f} rad ({np.degrees(delta):+.1f} deg)  "
+                    f"v={v:5.2f} m/s ({3.6 * v:5.1f} km/h)  "
+                    f"beta={beta:+.3f} rad ({np.degrees(beta):+.1f} deg)"
+                )
+                print(
+                    f"    a_x={obs['a_x'][0]:+6.2f} m/s^2 ({obs['a_x'][0] / 9.81:+5.2f} g)   "
+                    f"a_y={obs['a_y'][0]:+6.2f} m/s^2 ({obs['a_y'][0] / 9.81:+5.2f} g)"
+                )
+                print(
+                    f"    imu_ax={obs['imu_ax'][0]:+6.2f} m/s^2 ({obs['imu_ax'][0] / 9.81:+5.2f} g)   "
+                    f"imu_ay={obs['imu_ay'][0]:+6.2f} m/s^2 ({obs['imu_ay'][0] / 9.81:+5.2f} g)"
+                )
         step += 1
         laptime += step_reward
         env.render(mode='human')
